@@ -181,7 +181,7 @@ export default function App() {
       // We need to capture the element without the preview transform
       const dataUrl = await toPng(canvasRef.current, {
         cacheBust: false,
-        pixelRatio: 2, // Higher quality
+        pixelRatio: 1,
         style: { transform: "none" }, // Reset any preview scaling
       });
       const link = document.createElement("a");
