@@ -5,15 +5,56 @@ import { Download, Upload, Monitor, Layout, Image as ImageIcon, Maximize, Moon, 
 import { MockupFrame, FrameType, Theme } from '@/components/MockupFrame';
 import { cn } from '@/lib/utils';
 
+const readFileAsDataUrl = (file: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error('Unable to read image data.'));
+    };
+
+    reader.onerror = () => {
+      reject(reader.error ?? new Error('Unable to read image data.'));
+    };
+
+    reader.readAsDataURL(file);
+  });
+
+const normalizeImageUrl = (value: string) => {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  if (/^(data:|blob:|https?:\/\/)/i.test(trimmedValue)) {
+    return trimmedValue;
+  }
+
+  if (trimmedValue.startsWith('//')) {
+    return `${window.location.protocol}${trimmedValue}`;
+  }
+
+  return `https://${trimmedValue}`;
+};
+
 export default function App() {
   const [image, setImage] = useState<string | null>(null);
   const [inputType, setInputType] = useState<'upload' | 'url'>('upload');
+  const [sourceImageUrl, setSourceImageUrl] = useState('');
   const [frameType, setFrameType] = useState<FrameType>('mac');
   const [theme, setTheme] = useState<Theme>('light');
   const [padding, setPadding] = useState(64);
   const [background, setBackground] = useState('#e5e7eb');
   const [borderRadius, setBorderRadius] = useState(12);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isImportingImage, setIsImportingImage] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [sizePreset, setSizePreset] = useState('auto');
   const [customSize, setCustomSize] = useState({ width: 1200, height: 630 });
   
@@ -26,6 +67,51 @@ export default function App() {
   const [url, setUrl] = useState('example.com');
 
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  const resetImageAdjustments = () => {
+    setImageScale(1);
+    setImagePos({ x: 0, y: 0 });
+  };
+
+  const applyImage = (nextImage: string) => {
+    setImage(nextImage);
+    setImageError(null);
+    resetImageAdjustments();
+  };
+
+  const loadImageFromUrl = useCallback(async (rawValue: string) => {
+    const normalizedUrl = normalizeImageUrl(rawValue);
+
+    if (!normalizedUrl) {
+      setImageError('Please enter a direct image URL.');
+      return;
+    }
+
+    setIsImportingImage(true);
+
+    try {
+      const response = await fetch(normalizedUrl);
+
+      if (!response.ok) {
+        throw new Error(`Unexpected status: ${response.status}`);
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+
+      if (!contentType.startsWith('image/')) {
+        throw new Error(`Unsupported content type: ${contentType || 'unknown'}`);
+      }
+
+      const imageDataUrl = await readFileAsDataUrl(await response.blob());
+      setSourceImageUrl(normalizedUrl);
+      applyImage(imageDataUrl);
+    } catch (error) {
+      console.error('Failed to load image URL', error);
+      setImageError('Unable to load this image URL. Use a direct image link or upload the file instead.');
+    } finally {
+      setIsImportingImage(false);
+    }
+  }, []);
 
   const sizePresets = [
     { id: 'auto', label: 'Auto Fit', width: 0, height: 0 },
@@ -40,11 +126,20 @@ export default function App() {
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (file) {
-      const url = URL.createObjectURL(file);
-      setImage(url);
-      // Reset adjustments on new image
-      setImageScale(1);
-      setImagePos({ x: 0, y: 0 });
+      void (async () => {
+        setIsImportingImage(true);
+
+        try {
+          const imageDataUrl = await readFileAsDataUrl(file);
+          setSourceImageUrl('');
+          applyImage(imageDataUrl);
+        } catch (error) {
+          console.error('Failed to load uploaded image', error);
+          setImageError('Unable to read the selected file. Please try another image.');
+        } finally {
+          setIsImportingImage(false);
+        }
+      })();
     }
   }, []);
 
@@ -183,34 +278,53 @@ export default function App() {
               </div>
 
               {inputType === 'upload' ? (
-                <div 
-                  {...getRootProps()} 
-                  className={cn(
-                    "border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors h-32",
-                    isDragActive ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                <div className="space-y-2">
+                  <div 
+                    {...getRootProps()} 
+                    className={cn(
+                      "border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-colors h-32",
+                      isDragActive ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                    )}
+                  >
+                    <input {...getInputProps()} />
+                    <Upload className="w-6 h-6 text-gray-400 mb-2" />
+                    <p className="text-sm font-medium text-gray-600">
+                      {isDragActive ? "Drop image here" : "Click or drag"}
+                    </p>
+                  </div>
+                  {imageError && (
+                    <p className="text-[10px] text-center text-red-500">{imageError}</p>
                   )}
-                >
-                  <input {...getInputProps()} />
-                  <Upload className="w-6 h-6 text-gray-400 mb-2" />
-                  <p className="text-sm font-medium text-gray-600">
-                    {isDragActive ? "Drop image here" : "Click or drag"}
-                  </p>
                 </div>
               ) : (
                 <div className="h-32 flex flex-col justify-center">
                    <input 
                      type="text" 
                      placeholder="Paste image URL and press Enter..." 
+                     value={sourceImageUrl}
+                     disabled={isImportingImage}
                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black/5"
-                     onBlur={(e) => {
-                       if (e.target.value) setImage(e.target.value);
+                     onChange={(e) => {
+                       setSourceImageUrl(e.target.value);
+                       if (imageError) {
+                         setImageError(null);
+                       }
+                     }}
+                     onBlur={() => {
+                       void loadImageFromUrl(sourceImageUrl);
                      }}
                      onKeyDown={(e) => {
-                       if (e.key === 'Enter' && e.currentTarget.value) setImage(e.currentTarget.value);
+                       if (e.key === 'Enter') {
+                         e.preventDefault();
+                         void loadImageFromUrl(sourceImageUrl);
+                       }
                      }}
                    />
-                   <p className="text-[10px] text-gray-400 mt-2 text-center">
-                     Supports direct image links (png, jpg, webp)
+                   <p className={cn(
+                     "text-[10px] mt-2 text-center",
+                     imageError ? "text-red-500" : "text-gray-400"
+                   )}>
+                     {imageError ?? (isImportingImage ? 'Loading image...' : 'Supports direct image links (png, jpg, webp)')}
                    </p>
                 </div>
               )}
@@ -218,11 +332,15 @@ export default function App() {
           ) : (
             <div className="space-y-2">
               <div className="relative aspect-video w-full rounded-lg overflow-hidden border border-gray-200 bg-gray-50 group">
-                <img src={image} alt="Source" className="w-full h-full object-contain" />
+                <img src={image} alt="Source" className="w-full h-full object-contain" draggable={false} />
                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
               </div>
               <button 
-                onClick={() => setImage(null)}
+                onClick={() => {
+                  setImage(null);
+                  setImageError(null);
+                  setSourceImageUrl('');
+                }}
                 className="w-full py-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100 hover:text-red-600 text-xs font-medium transition-colors"
               >
                 Remove Image
@@ -464,7 +582,7 @@ export default function App() {
       </div>
 
       {/* Main Preview Area */}
-      <div className="flex-1 bg-gray-100/50 p-8 md:p-12 overflow-auto flex items-center justify-center min-h-[500px]">
+      <div className="flex-1 bg-gray-100/50 p-8 md:p-12 overflow-auto flex items-center justify-center min-h-125">
         {!image ? (
           <div className="flex flex-col items-center justify-center text-gray-400 space-y-4">
             <div className="w-24 h-24 bg-gray-200 rounded-full flex items-center justify-center">
@@ -501,17 +619,22 @@ export default function App() {
                     url={url}
                     className={cn(
                       "mx-auto transition-all",
-                      sizePreset === 'auto' ? "max-w-[800px]" : "max-w-full max-h-full"
+                      sizePreset === 'auto' ? "max-w-200" : "max-w-full max-h-full"
                     )}
                   >
                      <img 
                        src={image} 
                        alt="Preview" 
+                       draggable={false}
                        className={cn(
                          "block cursor-move origin-center",
                          isDragging ? "cursor-grabbing" : "cursor-grab"
                        )}
                        onMouseDown={handleMouseDown}
+                       onError={() => {
+                         setImage(null);
+                         setImageError('This image could not be rendered. Try uploading the file instead.');
+                       }}
                        style={{ 
                          borderRadius: frameType === 'none' ? `${borderRadius}px` : '0',
                          maxHeight: maxImgHeight ? `${maxImgHeight}px` : undefined,
